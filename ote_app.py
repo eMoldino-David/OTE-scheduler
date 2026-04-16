@@ -124,15 +124,51 @@ SCRAP_REASONS = [
 # ══════════════════════════════════════════════════════════════════════════
 # DATA LOADING
 # ══════════════════════════════════════════════════════════════════════════
+def _normalise_columns(df):
+    """Map raw DB column names to internal names used by the RR engine."""
+    col_map = {
+        'TOOLING ID': 'tool_id', 'EQUIPMENT_CODE': 'tool_id', 'EQUIPMENT CODE': 'tool_id',
+        'SHOT TIME': 'shot_time', 'LOCAL_SHOT_TIME': 'shot_time',
+        'ACTUAL CT': 'actual_ct', 'CT': 'actual_ct',
+        'APPROVED CT': 'approved_ct', 'APPROVED_CT': 'approved_ct',
+        'WORKING CAVITIES': 'working_cavities', 'WORKING_CAVITIES': 'working_cavities',
+        'SUPPLIER': 'supplier_id', 'SUPPLIER_ID': 'supplier_id',
+        'TOOLING TYPE': 'tooling_type', 'TOOLING_TYPE': 'tooling_type',
+        'PART': 'part_id', 'PART_ID': 'part_id', 'PART ID': 'part_id',
+        'PLANT': 'plant_id', 'PLANT_ID': 'plant_id',
+        'MATERIAL': 'material', 'PART NAME': 'part_name', 'PART_NAME': 'part_name',
+    }
+    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+    if 'shot_time' in df.columns:
+        df['shot_time'] = pd.to_datetime(df['shot_time'], dayfirst=False, errors='coerce')
+        df = df.dropna(subset=['shot_time'])
+    if 'actual_ct' in df.columns:
+        df['actual_ct'] = pd.to_numeric(df['actual_ct'], errors='coerce')
+        df = df.dropna(subset=['actual_ct'])
+    if 'tool_id' in df.columns:
+        df['tool_id'] = df['tool_id'].astype(str)
+    return df
+
 @st.cache_data(show_spinner="Loading production data...")
 def load_data(files, _cache_ver=APP_VERSION):
     if RR_ENGINE:
-        return rr_utils.load_all_data(files)
+        df = rr_utils.load_all_data(files)
+        if df.empty:
+            # Fallback: load raw and normalise
+            dfs = []
+            for f in files:
+                try:
+                    raw = pd.read_excel(f) if str(f.name).endswith(('.xlsx','.xls')) else pd.read_csv(f)
+                    dfs.append(_normalise_columns(raw))
+                except Exception:
+                    pass
+            return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+        return df
     dfs = []
     for f in files:
         try:
-            df = pd.read_excel(f) if str(f.name).endswith(('.xlsx','.xls')) else pd.read_csv(f)
-            dfs.append(df)
+            raw = pd.read_excel(f) if str(f.name).endswith(('.xlsx','.xls')) else pd.read_csv(f)
+            dfs.append(_normalise_columns(raw))
         except Exception:
             pass
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
