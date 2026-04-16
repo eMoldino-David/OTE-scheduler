@@ -541,7 +541,7 @@ def page_plant_overview(df_all, config, db):
     display_df.insert(0, '', rank_df['OTE (%)'].apply(ote_label))
 
     styled = display_df.style\
-        .applymap(style_score, subset=['OTE (%)','Availability (%)','Performance (%)'])\
+        .map(style_score, subset=['OTE (%)','Availability (%)','Performance (%)'])\
         .format({'OTE (%)':'{:.1f}','Availability (%)':'{:.1f}',
                  'Performance (%)':'{:.1f}','Quality (%)':'{:.1f}',
                  'Total Shots':'{:,.0f}','Stop Events':'{:,.0f}'})
@@ -831,7 +831,7 @@ def page_downtime_log(df_all, config, db):
                          'Confirmed Type','Reason','Status','Confirmed By']].copy()
     display['start_time'] = display['start_time'].dt.strftime('%Y-%m-%d %H:%M')
     st.dataframe(
-        display.style.applymap(style_status, subset=['Status']),
+        display.style.map(style_status, subset=['Status']),
         use_container_width=True, hide_index=True
     )
 
@@ -961,8 +961,8 @@ def page_scrap_log(df_all, config, db):
                          'Status','Confirmed By']].copy()
     st.dataframe(
         display.style
-            .applymap(style_confidence, subset=['Confidence'])
-            .applymap(style_status, subset=['Status']),
+            .map(style_confidence, subset=['Confidence'])
+            .map(style_status, subset=['Status']),
         use_container_width=True, hide_index=True
     )
 
