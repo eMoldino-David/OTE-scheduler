@@ -174,6 +174,77 @@ def load_data(files, _cache_ver=APP_VERSION):
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 # ══════════════════════════════════════════════════════════════════════════
+# MINIMAL STANDALONE ENGINE (no rr_utils dependency)
+# ══════════════════════════════════════════════════════════════════════════
+def _get_stable_mode(series):
+    s = series.dropna()
+    if s.empty: return np.nan
+    rounded = s.round(2)
+    modes = rounded.mode()
+    return float(modes.iloc[0]) if not modes.empty else float(s.median())
+
+def _process_tool_df(df, tolerance, downtime_gap, run_interval_hours):
+    """Minimal RR-equivalent processing — produces stop_flag, run_id, mode_ct."""
+    df = df.copy().sort_values('shot_time').reset_index(drop=True)
+    df['actual_ct'] = pd.to_numeric(df['actual_ct'], errors='coerce')
+    df = df.dropna(subset=['actual_ct','shot_time'])
+    if len(df) < 2:
+        return pd.DataFrame(), {}
+
+    df['time_diff_sec'] = df['shot_time'].diff().dt.total_seconds().fillna(0)
+    mask_first = pd.Series([True] + [False]*(len(df)-1), index=df.index)
+    df.loc[mask_first, 'time_diff_sec'] = df.loc[mask_first, 'actual_ct']
+
+    is_new_run = df['time_diff_sec'] > (run_interval_hours * 3600)
+    df['run_id'] = (is_new_run | mask_first).cumsum()
+
+    run_modes = (df[df['actual_ct'] < 1000]
+                 .groupby('run_id')['actual_ct']
+                 .apply(_get_stable_mode))
+    df['mode_ct'] = df['run_id'].map(run_modes).fillna(df['actual_ct'].median())
+    df['mode_lower'] = df['mode_ct'] * (1 - tolerance)
+    df['mode_upper'] = df['mode_ct'] * (1 + tolerance)
+
+    df['next_diff'] = df['time_diff_sec'].shift(-1).fillna(0)
+    is_gap   = df['next_diff'] > (df['actual_ct'] + downtime_gap)
+    is_abn   = (df['actual_ct'] < df['mode_lower']) | (df['actual_ct'] > df['mode_upper'])
+    is_hard  = df['actual_ct'] >= 999.9
+    df['stop_flag'] = np.where(is_gap | is_abn | is_hard, 1, 0)
+
+    startup_ct_ok = df['actual_ct'] < (df['mode_ct'] * 5)
+    df.loc[(mask_first | is_new_run) & startup_ct_ok, 'stop_flag'] = 0
+    df['prev_stop'] = df['stop_flag'].shift(1, fill_value=0)
+    df['stop_event'] = ((df['stop_flag'] == 1) & (df['prev_stop'] == 0)).astype(int)
+    df['adj_ct_sec'] = df['actual_ct'].copy()
+    df.loc[is_gap, 'adj_ct_sec'] = df.loc[is_gap, 'next_diff']
+
+    # Metrics
+    run_durations = []
+    for _, rdf in df.groupby('run_id'):
+        if rdf.empty: continue
+        dur = (rdf['shot_time'].max() - rdf['shot_time'].min()).total_seconds() + float(rdf.iloc[-1]['actual_ct'])
+        run_durations.append(dur)
+
+    total_runtime = sum(run_durations)
+    prod_df = df[df['stop_flag'] == 0]
+    prod_time = float(prod_df['actual_ct'].sum())
+    downtime = max(0, total_runtime - prod_time)
+    total_shots = len(df)
+    normal_shots = len(prod_df)
+    stop_events = int(df['stop_event'].sum())
+
+    res = {
+        'processed_df': df,
+        'total_runtime_sec': total_runtime,
+        'production_time_sec': prod_time,
+        'downtime_sec': downtime,
+        'total_shots': total_shots,
+        'normal_shots': normal_shots,
+        'stops': stop_events,
+    }
+    return df, res
+
+# ══════════════════════════════════════════════════════════════════════════
 # OTE CALCULATIONS
 # ══════════════════════════════════════════════════════════════════════════
 def compute_ote(df_tool, tolerance, downtime_gap, run_interval,
@@ -182,25 +253,17 @@ def compute_ote(df_tool, tolerance, downtime_gap, run_interval,
     if df_tool.empty:
         return {}
 
-    if RR_ENGINE:
-        calc = rr_utils.RunRateCalculator(
-            df_tool, tolerance, downtime_gap,
-            analysis_mode='aggregate', run_interval_hours=run_interval
-        )
-        res = calc.results
-        df_proc = res.get('processed_df', pd.DataFrame())
-    else:
-        return {}
+    df_proc, res = _process_tool_df(df_tool, tolerance, downtime_gap, run_interval)
 
     if df_proc.empty:
         return {}
 
-    total_runtime   = res.get('total_runtime_sec', 0)
-    prod_time       = res.get('production_time_sec', 0)
-    downtime_sec    = res.get('downtime_sec', 0)
-    total_shots     = res.get('total_shots', 0)
-    normal_shots    = res.get('normal_shots', 0)
-    stop_events     = res.get('stop_events', 0) if 'stop_events' in res else res.get('stops', 0)
+    total_runtime = res.get('total_runtime_sec', 0)
+    prod_time     = res.get('production_time_sec', 0)
+    downtime_sec  = res.get('downtime_sec', 0)
+    total_shots   = res.get('total_shots', 0)
+    normal_shots  = res.get('normal_shots', 0)
+    stop_events   = res.get('stops', 0)
 
     # Adjusted availability — remove planned downtime from denominator
     planned = min(planned_downtime_sec, total_runtime)
@@ -573,14 +636,9 @@ def page_parts_produced(df_all, config, db):
         st.warning("No data for this tool/date.")
         return
 
-    if RR_ENGINE:
-        calc = rr_utils.RunRateCalculator(
-            t_df, config['tolerance'], config['downtime_gap'],
-            analysis_mode='aggregate', run_interval_hours=config['run_interval']
-        )
-        df_proc = calc.results.get('processed_df', pd.DataFrame())
-    else:
-        df_proc = t_df.copy()
+    df_proc, _ = _process_tool_df(
+        t_df, config['tolerance'], config['downtime_gap'], config['run_interval']
+    )
 
     if df_proc.empty:
         st.warning("Could not process data.")
@@ -716,14 +774,9 @@ def page_downtime_log(df_all, config, db):
         t_df = df_all[df_all[id_col].astype(str) == tid]
         if t_df.empty:
             continue
-        if RR_ENGINE:
-            calc = rr_utils.RunRateCalculator(
-                t_df, config['tolerance'], config['downtime_gap'],
-                analysis_mode='aggregate', run_interval_hours=config['run_interval']
-            )
-            df_proc = calc.results.get('processed_df', pd.DataFrame())
-        else:
-            continue
+        df_proc, _ = _process_tool_df(
+            t_df, config['tolerance'], config['downtime_gap'], config['run_interval']
+        )
         if df_proc.empty or 'stop_event' not in df_proc.columns:
             continue
         stops = df_proc[df_proc['stop_event'] == 1].copy()
@@ -852,14 +905,9 @@ def page_scrap_log(df_all, config, db):
         t_df = df_all[df_all[id_col].astype(str) == tid]
         if t_df.empty:
             continue
-        if RR_ENGINE:
-            calc = rr_utils.RunRateCalculator(
-                t_df, config['tolerance'], config['downtime_gap'],
-                analysis_mode='aggregate', run_interval_hours=config['run_interval']
-            )
-            df_proc = calc.results.get('processed_df', pd.DataFrame())
-        else:
-            continue
+        df_proc, _ = _process_tool_df(
+            t_df, config['tolerance'], config['downtime_gap'], config['run_interval']
+        )
         flags = flag_scrap_events(df_proc, tid)
         all_flags.extend(flags)
 
