@@ -616,8 +616,8 @@ def page_stop_log(processed, config, db):
     with st.form("sl_form"):
         c1,c2,c3 = st.columns(3)
         dt_type = c1.radio("Downtime type", ["unplanned","planned"], key="sl_dt")
-        reasons = PLANNED_REASONS if dt_type=='planned' else UNPLANNED_REASONS
-        dt_reason = c2.selectbox("Reason", reasons, key="sl_reason")
+        all_reasons = ["— Unplanned —"] + UNPLANNED_REASONS + ["— Planned —"] + PLANNED_REASONS
+        dt_reason = c2.selectbox("Reason", all_reasons, key="sl_reason")
         by = c3.text_input("Your name", key="sl_by")
         if st.form_submit_button("✅ Confirm", use_container_width=True):
             data = {
@@ -726,12 +726,10 @@ def page_scrap(processed, config, db):
             with st.form("t1_form"):
                 cc1,cc2,cc3,cc4 = st.columns([1,1,2,1])
                 action = cc1.radio("Action", ["Confirm Scrap","No Scrap"], key="t1_act")
-                qty = cc2.number_input("Qty", 0, value=int(t1r['Est. Scrap']), key="t1_qty") \
-                      if action=="Confirm Scrap" else 0
+                qty = cc2.number_input("Qty", 0, value=int(t1r['Est. Scrap']), key="t1_qty")
                 def_reason = "Startup / Warmup" if t1r['Type']=='startup' else "Unknown"
                 reason_idx = SCRAP_REASONS.index(def_reason) if def_reason in SCRAP_REASONS else 0
-                sc_reason = cc3.selectbox("Reason", SCRAP_REASONS, index=reason_idx, key="t1_reason") \
-                            if action=="Confirm Scrap" else None
+                sc_reason = cc3.selectbox("Reason", SCRAP_REASONS, index=reason_idx, key="t1_reason")
                 by = cc4.text_input("Name", key="t1_by")
                 if st.form_submit_button("✅ Submit", use_container_width=True):
                     status = 'confirmed' if action=="Confirm Scrap" else 'dismissed'
@@ -740,7 +738,7 @@ def page_scrap(processed, config, db):
                         'source': t1r['Source'], 'type': t1r['Type'],
                         'est_qty': int(t1r['Est. Scrap']),
                         'confirmed_qty': int(qty) if status=='confirmed' else 0,
-                        'reason': sc_reason or '—',
+                        'reason': sc_reason if status=='confirmed' else '—',
                         'confirmed_by': by, 'confirmed_at': datetime.now().isoformat(),
                         'status': status,
                     }
