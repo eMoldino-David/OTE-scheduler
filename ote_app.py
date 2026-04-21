@@ -27,9 +27,15 @@ def check_password():
         st.markdown(f"### 🏭 OTE Dashboard {APP_VERSION}")
         pw = st.text_input("Password", type="password", key="ote_pw")
         if st.button("Login", use_container_width=True):
-            plain = st.secrets.get("OTE_PASSWORD", "ote2024")
             stored = st.secrets.get("OTE_PASSWORD_HASH", "")
-            ok = (hashlib.sha256(pw.encode()).hexdigest() == stored) if stored else (pw == plain)
+            plain  = st.secrets.get("OTE_PASSWORD", "")
+            if stored:
+                ok = hashlib.sha256(pw.encode()).hexdigest() == stored
+            elif plain:
+                ok = pw == plain
+            else:
+                st.error("No password configured in secrets.")
+                ok = False
             if ok:
                 st.session_state.authenticated = True
                 st.rerun()
@@ -197,7 +203,7 @@ def process_tool(df, tolerance, downtime_gap, run_interval_h, startup_count=0):
 @st.cache_data(show_spinner="Processing tools...", ttl=300)
 def process_all(df_json, tolerance, downtime_gap, run_interval, startup_count, _v=APP_VERSION):
     df_all = pd.read_json(df_json)
-    df_all['shot_time'] = pd.to_datetime(df_all['shot_time'])
+    df_all['shot_time'] = pd.to_datetime(df_all['shot_time'], unit='ms', errors='coerce')
     results = {}
     id_col = 'tool_id' if 'tool_id' in df_all.columns else df_all.columns[0]
     for tid in df_all[id_col].unique():
